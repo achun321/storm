@@ -20,18 +20,32 @@ class StormArticleGenerationModule(ArticleGenerationModule):
 
     def __init__(
         self,
-        article_gen_lm=Union[dspy.dsp.LM, dspy.dsp.HFModel],
+        article_gen_lm: Union[dspy.dsp.LM, dspy.dsp.HFModel],
         retrieve_top_k: int = 5,
         max_thread_num: int = 10,
         custom_sources: List[Information] = None,
         news_mode: bool = False,
     ):
+        """Init
+
+        Args:
+            article_gen_lm: language model for article generation
+            retrieve_top_k: number of information to retrieve from information table
+            max_thread_num: max number of threads for parallelizing section generation
+            custom_sources: custom information source
+            news_mode: whether to write in news article style
+
+        Returns:
+            None
+        """
         super().__init__()
-        self.retrieve_top_k = retrieve_top_k
         self.article_gen_lm = article_gen_lm
+        self.retrieve_top_k = retrieve_top_k
         self.max_thread_num = max_thread_num
-        self.section_gen = ConvToSection(engine=self.article_gen_lm, news_mode=news_mode)
         self.custom_sources = custom_sources or []
+        self.news_mode = news_mode
+        self.conv_to_section = ConvToSection(engine=article_gen_lm, news_mode=news_mode)
+        self.custom_info_queue = []
 
     def generate_section(
         self, topic, section_name, information_table, section_outline, section_query
@@ -46,7 +60,7 @@ class StormArticleGenerationModule(ArticleGenerationModule):
         if self.custom_sources:
             collected_info.extend(self.custom_sources)
             
-        output = self.section_gen(
+        output = self.conv_to_section(
             topic=topic,
             outline=section_outline,
             section=section_name,
@@ -159,8 +173,48 @@ class ConvToSection(dspy.Module):
     def forward(
         self, topic: str, outline: str, section: str, collected_info: List[Information]
     ):
+        # Filter information based on country for country-specific sections
+        filtered_info = collected_info
+        
+        if self.news_mode:
+            # Check if this is a country-specific section
+            country_match = None
+            for country in [info.meta.get('country') for info in collected_info if hasattr(info, 'meta')]:
+                if country and section.lower().startswith(country.lower()):
+                    country_match = country
+                    break
+                    
+            if country_match:
+                # Filter information to prioritize sources from this country
+                country_sources = [
+                    info for info in collected_info 
+                    if hasattr(info, 'meta') and info.meta.get('country') == country_match
+                ]
+                # Add some international sources too
+                international_sources = [
+                    info for info in collected_info 
+                    if hasattr(info, 'meta') and info.meta.get('country') == 'International'
+                ]
+                filtered_info = country_sources + international_sources
+                
+                # If we don't have enough sources, add some from other countries
+                if len(filtered_info) < 2:
+                    filtered_info = collected_info
+            
+            # For comparison section, use comparison summary if available
+            elif "comparative analysis" in section.lower() or "comparison" in section.lower():
+                comparison_sources = [
+                    info for info in collected_info 
+                    if hasattr(info, 'meta') and info.meta.get('type') == 'comparison_summary'
+                ]
+                if comparison_sources:
+                    filtered_info = comparison_sources + [
+                        info for info in collected_info 
+                        if not hasattr(info, 'meta') or info.meta.get('type') != 'comparison_summary'
+                    ]
+        
         info = ""
-        for idx, storm_info in enumerate(collected_info):
+        for idx, storm_info in enumerate(filtered_info):
             info += f"[{idx + 1}]\n" + "\n".join(storm_info.snippets)
             info += "\n\n"
 

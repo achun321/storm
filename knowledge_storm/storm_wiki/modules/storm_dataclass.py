@@ -144,6 +144,20 @@ class StormInformationTable(InformationTable):
 
         return list(selected_url_to_info.values())
 
+    def add_information(self, info: Information):
+        """Add an Information object to the url_to_info dictionary
+        
+        Args:
+            info: Information object to add
+        """
+        if info.url in self.url_to_info:
+            # If this URL already exists, merge the snippets
+            self.url_to_info[info.url].snippets.extend(info.snippets)
+            self.url_to_info[info.url].snippets = list(set(self.url_to_info[info.url].snippets))
+        else:
+            # Otherwise just add it directly
+            self.url_to_info[info.url] = info
+
 
 class StormArticle(Article):
     def __init__(self, topic_name):

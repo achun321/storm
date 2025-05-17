@@ -62,12 +62,13 @@ class WriteLeadSection(dspy.Signature):
     
     If news_mode is True:
     1. Write a clear, informative lead paragraph that summarizes the most important facts of the story (who, what, where, when, why, how)
-    2. Present your perspective and analysis in subsequent paragraphs, after establishing key facts
-    3. Use a professional, authoritative tone that communicates your viewpoint through evidence and reasoned argument
-    4. Attribute claims and statements to their sources rather than presenting opinion as fact
-    5. Include relevant context to help readers understand the significance of the topic
-    6. Include inline citations (e.g., "Washington, D.C., is the capital of the United States.[1][3].") to support your analysis
-    7. Avoid overly dramatic or emotional language, even when expressing a strong viewpoint
+    2. Introduce the key countries or perspectives being compared in the article
+    3. Highlight the significance of the topic in international relations
+    4. Use a professional, balanced tone that acknowledges different viewpoints
+    5. Include relevant historical context to help readers understand the significance of the topic
+    6. Include inline citations (e.g., "Washington, D.C., is the capital of the United States.[1][3].") to support claims
+    7. Avoid favoring one country's perspective over others - present a neutral introduction while acknowledging tensions
+    8. Focus on providing a factual foundation that introduces the different perspectives that will be explored in detail
     
     If news_mode is False or not specified:
     1. The lead should stand on its own as a concise overview of the article's topic

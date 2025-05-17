@@ -33,6 +33,8 @@ class ConvSimulator(dspy.Module):
         max_search_queries_per_turn: int,
         search_top_k: int,
         max_turn: int,
+        custom_sources: List[Information] = None,
+        news_mode: bool = False,
     ):
         super().__init__()
         self.wiki_writer = WikiWriter(engine=question_asker_engine)
@@ -41,8 +43,12 @@ class ConvSimulator(dspy.Module):
             max_search_queries=max_search_queries_per_turn,
             search_top_k=search_top_k,
             retriever=retriever,
+            custom_sources=custom_sources,
+            news_mode=news_mode,
         )
         self.max_turn = max_turn
+        self.custom_sources = custom_sources
+        self.news_mode = news_mode
 
     def forward(
         self,
@@ -73,7 +79,7 @@ class ConvSimulator(dspy.Module):
                 agent_utterance=expert_output.answer,
                 user_utterance=user_utterance,
                 search_queries=expert_output.queries,
-                search_results=expert_output.searched_results,
+                search_results=expert_output.search_results,
             )
             dlg_history.append(dlg_turn)
             callback_handler.on_dialogue_turn_end(dlg_turn=dlg_turn)
@@ -166,7 +172,7 @@ class QuestionToQuery(dspy.Signature):
 
 class AnswerQuestion(dspy.Signature):
     """You are an expert who can use information effectively. You are chatting with a Wikipedia writer who wants to write a Wikipedia page on topic you know. You have gathered the related information and will now use the information to form a response.
-    Make your response as informative as possible, ensuring that every sentence is supported by the gathered information. If the [gathered information] is not directly related to the [topic] or [question], provide the most relevant answer based on the available information. If no appropriate answer can be formulated, respond with, “I cannot answer this question based on the available information,” and explain any limitations or gaps.
+    Make your response as informative as possible, ensuring that every sentence is supported by the gathered information. If the [gathered information] is not directly related to the [topic] or [question], provide the most relevant answer based on the available information. If no appropriate answer can be formulated, respond with, "I cannot answer this question based on the available information," and explain any limitations or gaps.
     """
 
     topic = dspy.InputField(prefix="Topic you are discussing about:", format=str)
@@ -192,6 +198,8 @@ class TopicExpert(dspy.Module):
         max_search_queries: int,
         search_top_k: int,
         retriever: Retriever,
+        custom_sources: List[Information] = None,
+        news_mode: bool = False,
     ):
         super().__init__()
         self.generate_queries = dspy.Predict(QuestionToQuery)
@@ -200,6 +208,8 @@ class TopicExpert(dspy.Module):
         self.engine = engine
         self.max_search_queries = max_search_queries
         self.search_top_k = search_top_k
+        self.custom_sources = custom_sources or []
+        self.news_mode = news_mode
 
     def forward(self, topic: str, question: str, ground_truth_url: str):
         with dspy.settings.context(lm=self.engine, show_guidelines=False):
@@ -214,6 +224,34 @@ class TopicExpert(dspy.Module):
             searched_results: List[Information] = self.retriever.retrieve(
                 list(set(queries)), exclude_urls=[ground_truth_url]
             )
+            
+            # Add custom sources if in news mode and there are country-specific needs
+            if self.news_mode and self.custom_sources:
+                # Find if the question is asking about a specific country's perspective
+                country_specific_search = False
+                country_mentioned = None
+                
+                for source in self.custom_sources:
+                    if hasattr(source, 'meta') and 'country' in source.meta:
+                        country = source.meta['country']
+                        if country.lower() in question.lower():
+                            country_specific_search = True
+                            country_mentioned = country
+                            break
+                
+                # If country-specific search or comparison question, add relevant custom sources
+                if country_specific_search:
+                    # Add sources from the mentioned country
+                    relevant_sources = [
+                        source for source in self.custom_sources 
+                        if hasattr(source, 'meta') and 'country' in source.meta 
+                        and source.meta['country'].lower() == country_mentioned.lower()
+                    ]
+                    searched_results.extend(relevant_sources)
+                elif "compare" in question.lower() or "contrast" in question.lower() or "different" in question.lower():
+                    # For comparison questions, add all custom sources
+                    searched_results.extend(self.custom_sources)
+            
             if len(searched_results) > 0:
                 # Evaluate: Simplify this part by directly using the top 1 snippet.
                 info = ""
@@ -240,7 +278,7 @@ class TopicExpert(dspy.Module):
                 answer = "Sorry, I cannot find information for this question. Please ask another question."
 
         return dspy.Prediction(
-            queries=queries, searched_results=searched_results, answer=answer
+            queries=queries, search_results=searched_results, answer=answer
         )
 
 
@@ -259,6 +297,9 @@ class StormKnowledgeCurationModule(KnowledgeCurationModule):
         search_top_k: int,
         max_conv_turn: int,
         max_thread_num: int,
+        custom_sources: List[Information] = None,
+        news_mode: bool = False,
+        explicit_countries: List[str] = None,
     ):
         """
         Store args and finish initialization.
@@ -269,6 +310,10 @@ class StormKnowledgeCurationModule(KnowledgeCurationModule):
         self.search_top_k = search_top_k
         self.max_thread_num = max_thread_num
         self.retriever = retriever
+        self.custom_sources = custom_sources
+        self.news_mode = news_mode
+        self.explicit_countries = explicit_countries
+        
         self.conv_simulator = ConvSimulator(
             topic_expert_engine=conv_simulator_lm,
             question_asker_engine=question_asker_lm,
@@ -276,11 +321,16 @@ class StormKnowledgeCurationModule(KnowledgeCurationModule):
             max_search_queries_per_turn=max_search_queries_per_turn,
             search_top_k=search_top_k,
             max_turn=max_conv_turn,
+            custom_sources=custom_sources,
+            news_mode=news_mode,
         )
 
     def _get_considered_personas(self, topic: str, max_num_persona) -> List[str]:
         return self.persona_generator.generate_persona(
-            topic=topic, max_num_persona=max_num_persona
+            topic=topic, 
+            max_num_persona=max_num_persona,
+            custom_sources=self.custom_sources,
+            explicit_countries=self.explicit_countries
         )
 
     def _run_conversation(
@@ -369,9 +419,15 @@ class StormKnowledgeCurationModule(KnowledgeCurationModule):
         if disable_perspective:
             considered_personas = [""]
         else:
-            considered_personas = self._get_considered_personas(
-                topic=topic, max_num_persona=max_perspective
-            )
+            if self.news_mode and self.custom_sources:
+                # When in news mode, we'll use the news-specific persona generator
+                considered_personas = self._get_considered_personas(
+                    topic=topic, max_num_persona=max_perspective
+                )
+            else:
+                considered_personas = self._get_considered_personas(
+                    topic=topic, max_num_persona=max_perspective
+                )
         callback_handler.on_identify_perspective_end(perspectives=considered_personas)
 
         # run conversation
@@ -385,9 +441,64 @@ class StormKnowledgeCurationModule(KnowledgeCurationModule):
         )
 
         information_table = StormInformationTable(conversations)
+        
+        # If using news mode with custom sources, add the custom sources directly to information table
+        if self.news_mode and self.custom_sources:
+            # Add custom sources directly to the information table
+            for source in self.custom_sources:
+                information_table.add_information(source)
+        
         callback_handler.on_information_gathering_end()
         if return_conversation_log:
             return information_table, StormInformationTable.construct_log_dict(
                 conversations
             )
         return information_table
+
+def extract_queries_from_custom_sources(custom_sources, topic, max_queries_per_source=2):
+    """Generate search queries from custom sources to find related content."""
+    all_queries = []
+    
+    for source in custom_sources:
+        # Extract snippets and metadata
+        snippets = source.snippets
+        country = source.meta.get('country', '') if hasattr(source, 'meta') else ''
+        
+        # Combine snippets into a single text
+        source_text = " ".join(snippets)
+        
+        # Generate queries using an LLM
+        prompt = f"""
+        Topic: {topic}
+        Country perspective: {country}
+        
+        Text from source:
+        {source_text[:1000]}  # Limit text length
+        
+        Based on this source about {topic}, generate {max_queries_per_source} specific search queries 
+        that would help find additional related information. These queries should focus on key facts, 
+        perspectives, or claims that would benefit from additional supporting sources.
+        
+        Format each query on a new line starting with '- '
+        """
+        
+        # Use your LLM to generate queries
+        response = question_asker_lm(prompt)  # Assuming you have access to this LLM
+        
+        # Extract queries from the response
+        extracted_queries = [
+            q.strip('- ').strip() 
+            for q in response.split('\n') 
+            if q.strip().startswith('- ')
+        ]
+        
+        # Add country context to queries if available
+        if country:
+            extracted_queries = [
+                f"{q} {country} perspective" if "perspective" not in q.lower() else q
+                for q in extracted_queries
+            ]
+        
+        all_queries.extend(extracted_queries[:max_queries_per_source])
+    
+    return all_queries
