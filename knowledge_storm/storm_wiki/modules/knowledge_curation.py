@@ -483,7 +483,7 @@ def extract_queries_from_custom_sources(custom_sources, topic, max_queries_per_s
         """
         
         # Use your LLM to generate queries
-        response = question_asker_lm(prompt)  # Assuming you have access to this LLM
+        response = question_asker_lm(prompt) 
         
         # Extract queries from the response
         extracted_queries = [
